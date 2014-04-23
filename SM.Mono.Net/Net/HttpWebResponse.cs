@@ -410,13 +410,13 @@ namespace SM.Mono.Net
                     cookie.HasDomain = false;
                 }
 
-                if (cookie.HasDomain &&
-                    !await CookieContainer.CheckSameOriginAsync(_uri, cookie.Domain).ConfigureAwait(false))
+                if (cookie.HasDomain && !await CookieContainer.CheckSameOriginAsync(_uri, cookie.Domain).ConfigureAwait(false))
                     continue;
 
                 _cookieCollection.Add(cookie);
+
                 if (_cookieContainer != null)
-                    _cookieContainer.AddAsync(_uri, cookie);
+                    await _cookieContainer.AddAsync(_uri, cookie).ConfigureAwait(false);
             }
         }
     }
