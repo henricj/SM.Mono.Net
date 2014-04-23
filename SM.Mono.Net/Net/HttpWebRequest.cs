@@ -32,10 +32,6 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
-//using System.Configuration;
-//using System.Net.Cache;
-//using System.Runtime.Remoting.Messaging;
-
 using System;
 using System.Globalization;
 using System.IO;
@@ -697,32 +693,17 @@ namespace SM.Mono.Net
             AddRange(rangeSpecifier, @from, (long)to);
         }
 
-#if NET_4_0
-        public
-#else
-        internal
-#endif
- void AddRange(long range)
+        public void AddRange(long range)
         {
             AddRange("bytes", range);
         }
 
-#if NET_4_0
-        public
-#else
-        internal
-#endif
- void AddRange(long from, long to)
+        public void AddRange(long from, long to)
         {
             AddRange("bytes", from, to);
         }
 
-#if NET_4_0
-        public
-#else
-        internal
-#endif
- void AddRange(string rangeSpecifier, long range)
+        public void AddRange(string rangeSpecifier, long range)
         {
             if (rangeSpecifier == null)
                 throw new ArgumentNullException("rangeSpecifier");
@@ -748,12 +729,7 @@ namespace SM.Mono.Net
             _webHeaders.RemoveAndAdd("Range", r);
         }
 
-#if NET_4_0
-        public
-#else
-        internal
-#endif
- void AddRange(string rangeSpecifier, long from, long to)
+        public void AddRange(string rangeSpecifier, long from, long to)
         {
             if (rangeSpecifier == null)
                 throw new ArgumentNullException("rangeSpecifier");
@@ -899,32 +875,8 @@ namespace SM.Mono.Net
                 Monitor.Exit(_locker);
             }
 
-            //aread.InnerAsyncResult = CheckIfForceWrite(GetResponseAsyncCB, aread);
-            //if (aread.InnerAsyncResult == null)
-            //    GetResponseAsyncCB2(aread);
-            //else
-            //    Monitor.Exit(locker);
-
             return aread.Task;
         }
-
-        //void GetResponseAsyncCB(IAsyncResult ar)
-        //{
-        //    var result = (WebAsyncResult)ar;
-        //    var innerResult = (WebAsyncResult)result.InnerAsyncResult;
-        //    result.InnerAsyncResult = null;
-
-        //    if (innerResult != null && innerResult.GotException)
-        //    {
-        //        _asyncRead.TrySetException(innerResult.Exception);
-        //        //asyncRead.SetCompleted(true, innerResult.Exception);
-        //        //asyncRead.DoCallback();
-        //        return;
-        //    }
-
-        //    Monitor.Enter(_locker);
-        //    GetResponseAsyncCB2((WebAsyncResult)ar);
-        //}
 
         void GetResponseAsyncCB2(TaskCompletionSource<HttpWebResponse> aread)
         {
@@ -959,27 +911,6 @@ namespace SM.Mono.Net
 
             Monitor.Exit(_locker);
         }
-
-        //public override WebResponse EndGetResponse(IAsyncResult asyncResult)
-        //{
-        //    if (asyncResult == null)
-        //        throw new ArgumentNullException("asyncResult");
-
-        //    var result = asyncResult as WebAsyncResult;
-        //    if (result == null)
-        //        throw new ArgumentException("Invalid IAsyncResult", "asyncResult");
-
-        //    if (!result.WaitUntilComplete(timeout, false))
-        //    {
-        //        Abort();
-        //        throw new WebException("The request timed out", WebExceptionStatus.Timeout);
-        //    }
-
-        //    if (result.GotException)
-        //        throw result.Exception;
-
-        //    return result.Response;
-        //}
 
         internal bool FinishedReading { get; set; }
 
@@ -1323,17 +1254,7 @@ namespace SM.Mono.Net
 
         async Task SetWriteStreamCB()
         {
-            //var result = ar as WebAsyncResult;
-
-            //if (result != null && result.Exception != null)
-            //{
-            //    SetWriteStreamErrorCB(result.Exception);
-            //    return;
-            //}
-
             _haveRequest = true;
-
-            //WebAsyncResult writeRequestResult = null;
 
             if (_bodyBuffer != null)
             {
@@ -1361,22 +1282,6 @@ namespace SM.Mono.Net
                 _asyncWrite = null;
             }
         }
-
-        //void SetWriteStreamCB2(IAsyncResult ar)
-        //{
-        //    var result = (WebAsyncResult)ar;
-        //    if (result != null && result.GotException)
-        //    {
-        //        SetWriteStreamErrorCB(result.Exception);
-        //        return;
-        //    }
-
-        //    if (_asyncWrite != null)
-        //    {
-        //        _asyncWrite.TrySetResult(_writeStream);
-        //        _asyncWrite = null;
-        //    }
-        //}
 
         internal void SetResponseError(WebExceptionStatus status, Exception e, string where)
         {
@@ -1523,31 +1428,15 @@ namespace SM.Mono.Net
             {
                 Monitor.TryEnter(_locker, ref isLocked);
 
-                //if (Aborted)
-                //{
-                //    if (data.Stream != null)
-                //        data.Stream.Close();
-                //    return;
-                //}
+                if (Aborted)
+                {
+                    if (data.Stream != null)
+                        data.Stream.Close();
+
+                    return;
+                }
 
                 WebException wexc = null;
-                //try
-                //{
-                //    webResponse = await HttpWebResponse.CreateAsync(Address, method, data, CookieContainer).ConfigureAwait(false);
-                //}
-                //catch (Exception e)
-                //{
-                //    wexc = new WebException(e.Message, e, WebExceptionStatus.ProtocolError, null);
-                //    if (data.Stream != null)
-                //        data.Stream.Close();
-                //}
-
-                //if (wexc == null && (method == "POST" || method == "PUT"))
-                //{
-                //    CheckSendError(data);
-                //    if (saved_exc != null)
-                //        wexc = (WebException)saved_exc;
-                //}
 
                 var r = _asyncRead;
 

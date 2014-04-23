@@ -44,7 +44,6 @@ namespace SM.Mono.Net
     {
         static readonly byte[] Crlf = { 13, 10 };
         readonly bool _allowBuffering;
-        readonly AsyncCallback _cbWrapper; // Calls to ReadCallbackWrapper or WriteCallbacWrapper
         readonly WebConnection _cnc;
         readonly bool _isRead;
         readonly object _locker = new object();
@@ -83,7 +82,6 @@ namespace SM.Mono.Net
             if (data.Request == null)
                 throw new InvalidOperationException("data.request was not initialized");
             _isRead = true;
-            _cbWrapper = ReadCallbackWrapper;
             _pending = new ManualResetEvent(true);
             _request = data.Request;
             _readTimeout = _request.ReadWriteTimeout;
@@ -113,7 +111,6 @@ namespace SM.Mono.Net
             _readTimeout = request.ReadWriteTimeout;
             _writeTimeout = _readTimeout;
             _isRead = false;
-            _cbWrapper = WriteCallbackWrapper;
             _cnc = cnc;
             _request = request;
             _allowBuffering = request.InternalAllowBuffering;
@@ -363,61 +360,9 @@ namespace SM.Mono.Net
             _cnc.NextRead();
         }
 
-        void WriteCallbackWrapper(IAsyncResult r)
-        {
-            var result = r as WebAsyncResult;
-            if (result != null && result.AsyncWriteAll)
-                return;
-
-            if (r.AsyncState != null)
-            {
-                result = (WebAsyncResult)r.AsyncState;
-                result.InnerAsyncResult = r;
-                result.DoCallback();
-            }
-            else
-            {
-                try
-                {
-                    EndWrite(r);
-                }
-                catch
-                { }
-            }
-        }
-
-        void ReadCallbackWrapper(IAsyncResult r)
-        {
-            WebAsyncResult result;
-            if (r.AsyncState != null)
-            {
-                result = (WebAsyncResult)r.AsyncState;
-                result.InnerAsyncResult = r;
-                result.DoCallback();
-            }
-            else
-            {
-                try
-                {
-                    EndRead(r);
-                }
-                catch
-                { }
-            }
-        }
-
         public override int Read(byte[] buffer, int offset, int size)
         {
-            var cb = _cbWrapper;
-            var res = (WebAsyncResult)BeginRead(buffer, offset, size, cb, null);
-            if (!res.IsCompleted && !res.WaitUntilComplete(ReadTimeout, false))
-            {
-                _nextReadCalled = true;
-                _cnc.Close(true);
-                throw new WebException("The operation has timed out.", WebExceptionStatus.Timeout);
-            }
-
-            return EndRead(res);
+            return ReadAsync(buffer, offset, size).Result;
         }
 
         public override IAsyncResult BeginRead(byte[] buffer, int offset, int size,
@@ -462,13 +407,9 @@ namespace SM.Mono.Net
             if (size < 0 || (length - offset) < size)
                 throw new ArgumentOutOfRangeException("size");
 
-            //var result = new WebAsyncResult(cb, state, buffer, offset, size);
             if (_totalRead >= _contentLength)
             {
                 return 0;
-                //result.SetCompleted(true, -1);
-                //result.DoCallback();
-                //return result;
             }
 
             lock (_locker)
@@ -491,16 +432,10 @@ namespace SM.Mono.Net
                 if (size == 0 || _totalRead >= _contentLength)
                 {
                     return copy;
-                    //result.SetCompleted(true, copy);
-                    //result.DoCallback();
-                    //return result;
                 }
 
                 nbytes2 = copy;
             }
-
-            //if (cb != null)
-            //    cb = _cbWrapper;
 
             if (_contentLength != long.MaxValue && _contentLength - _totalRead < size)
                 size = (int)(_contentLength - _totalRead);
@@ -508,8 +443,6 @@ namespace SM.Mono.Net
             if (_readEof)
             {
                 return nbytes2;
-                //result.SetCompleted(true, result.NBytes);
-                //result.DoCallback();
             }
 
             int nbytes;
@@ -543,55 +476,6 @@ namespace SM.Mono.Net
 
             if (0 == nbytes)
                 _contentLength = _totalRead;
-            //    return result;
-            //}
-
-            //public override int EndRead(IAsyncResult r)
-            //{
-            //    var result = (WebAsyncResult)r;
-            //    if (result.EndCalled)
-            //    {
-            //        var xx = result.NBytes;
-            //        return (xx >= 0) ? xx : 0;
-            //    }
-
-            //    result.EndCalled = true;
-
-            //    if (!result.IsCompleted)
-            //{
-            //var nbytes = -1;
-            //    try
-            //    {
-            //        nbytes = _cnc.EndRead(_request, result);
-            //    }
-            //    catch (Exception exc)
-            //    {
-            //        lock (_locker)
-            //        {
-            //            _pendingReads--;
-            //            if (_pendingReads == 0)
-            //                _pending.Set();
-            //        }
-
-            //        _nextReadCalled = true;
-            //        _cnc.Close(true);
-            //        result.SetCompleted(false, exc);
-            //        result.DoCallback();
-            //        throw;
-            //    }
-
-            //    if (nbytes < 0)
-            //    {
-            //        nbytes = 0;
-            //        _readEof = true;
-            //    }
-
-            //    _totalRead += nbytes;
-            //    result.SetCompleted(false, nbytes + result.NBytes);
-            //    result.DoCallback();
-            //    if (nbytes == 0)
-            //        _contentLength = _totalRead;
-            //}
 
             lock (_locker)
             {
@@ -607,37 +491,6 @@ namespace SM.Mono.Net
 
             return (nb >= 0) ? nb : 0;
         }
-
-        //void WriteAsyncCB(IAsyncResult r)
-        //{
-        //    var result = (WebAsyncResult)r.AsyncState;
-        //    result.InnerAsyncResult = null;
-
-        //    try
-        //    {
-        //        _cnc.EndWrite(_request, true, r);
-        //        result.SetCompleted(false, 0);
-        //        if (!_initRead)
-        //        {
-        //            _initRead = true;
-        //            WebConnection.StartReading(_cnc);
-        //        }
-        //    }
-        //    catch (Exception e)
-        //    {
-        //        KillBuffer();
-        //        _nextReadCalled = true;
-        //        _cnc.Close(true);
-        //        if (e is SocketException)
-        //            e = new IOException("Error writing request", e);
-        //        result.SetCompleted(false, e);
-        //    }
-
-        //    if (_allowBuffering && !_sendChunked && _request.ContentLength > 0 && TotalWritten == _request.ContentLength)
-        //        _completeRequestWritten = true;
-
-        //    result.DoCallback();
-        //}
 
         public override IAsyncResult BeginWrite(byte[] buffer, int offset, int size,
             AsyncCallback cb, object state)
@@ -662,6 +515,8 @@ namespace SM.Mono.Net
 
         public override async Task WriteAsync(byte[] buffer, int offset, int size, CancellationToken cancellationToken)
         {
+            // TODO: Timeout...
+
             if (_request.Aborted)
                 throw new WebException("The request was canceled.", WebExceptionStatus.RequestCanceled);
 
@@ -735,13 +590,6 @@ namespace SM.Mono.Net
             try
             {
                 await _cnc.WriteAsync(_request, buffer, offset, size, cancellationToken).ConfigureAwait(false);
-                //result.InnerAsyncResult = _cnc.BeginWrite(_request, buffer, offset, size, callback, result);
-                //if (result.InnerAsyncResult == null)
-                //{
-                //    if (!result.IsCompleted)
-                //        result.SetCompleted(true, 0);
-                //    result.DoCallback();
-                //}
 
                 if (!_initRead)
                 {
@@ -758,10 +606,6 @@ namespace SM.Mono.Net
                     throw new IOException("Error writing request", e);
 
                 throw;
-                //if (!IgnoreIoErrors)
-                //    throw;
-                //result.SetCompleted(true, 0);
-                //result.DoCallback();
             }
 
             TotalWritten += size;
@@ -805,55 +649,11 @@ namespace SM.Mono.Net
             var task = (Task)r;
 
             task.Wait();
-            //if (r == null)
-            //    throw new ArgumentNullException("r");
-
-            //var result = r as WebAsyncResult;
-            //if (result == null)
-            //    throw new ArgumentException("Invalid IAsyncResult");
-
-            //if (result.EndCalled)
-            //    return;
-
-            //result.EndCalled = true;
-            //if (result.AsyncWriteAll)
-            //{
-            //    result.WaitUntilComplete();
-            //    if (result.GotException)
-            //        throw result.Exception;
-            //    return;
-            //}
-
-            //if (_allowBuffering && !_sendChunked)
-            //    return;
-
-            //if (result.GotException)
-            //    throw result.Exception;
-
-            //if (_sendChunked)
-            //{
-            //    lock (_locker)
-            //    {
-            //        _pendingWrites--;
-            //        if (_pendingWrites == 0)
-            //            _pending.Set();
-            //    }
-            //}
         }
 
         public override void Write(byte[] buffer, int offset, int size)
         {
-            var cb = _cbWrapper;
-            var res = (WebAsyncResult)BeginWrite(buffer, offset, size, cb, null);
-            if (!res.IsCompleted && !res.WaitUntilComplete(WriteTimeout, false))
-            {
-                KillBuffer();
-                _nextReadCalled = true;
-                _cnc.Close(true);
-                throw new IOException("Write timed out.");
-            }
-
-            EndWrite(res);
+            WriteAsync(buffer, offset, size).Wait();
         }
 
         public override void Flush()
@@ -906,41 +706,8 @@ namespace SM.Mono.Net
                 {
                     throw new WebException("Error writing headers", e, WebExceptionStatus.SendFailure, null);
                 }
-
-                //var result = new WebAsyncResult(callback, state);
-                //result.InnerAsyncResult = _cnc.BeginWrite(_request, _headers, 0, _headers.Length, SetHeadersCB, result);
-                //if (result.InnerAsyncResult != null)
-                //    return result;
             }
         }
-
-        //void SetHeadersCB(IAsyncResult r)
-        //{
-        //    var result = (WebAsyncResult)r.AsyncState;
-        //    result.InnerAsyncResult = null;
-        //    try
-        //    {
-        //        _cnc.EndWrite(_request, true, r);
-        //        result.SetCompleted(false, 0);
-        //        if (!_initRead)
-        //        {
-        //            _initRead = true;
-        //            WebConnection.ReadAsync(_cnc);
-        //        }
-        //        var cl = _request.ContentLength;
-        //        if (!_sendChunked && cl == 0)
-        //            _requestWritten = true;
-        //    }
-        //    catch (WebException e)
-        //    {
-        //        result.SetCompleted(false, e);
-        //    }
-        //    catch (Exception e)
-        //    {
-        //        result.SetCompleted(false, new WebException("Error writing headers", e, WebExceptionStatus.SendFailure, null));
-        //    }
-        //    result.DoCallback();
-        //}
 
         internal async Task WriteRequestAsync()
         {
@@ -966,30 +733,8 @@ namespace SM.Mono.Net
 
             await SetHeadersAsync(true).ConfigureAwait(false);
 
-            //var result = new WebAsyncResult(callback, state);
-            //result.InnerAsyncResult = SetHeadersAsync(true, WriteRequestAsyncCB, result);
-            //if (result.InnerAsyncResult == null)
-            //    WriteRequestAsyncCB(result);
-            //return result;
-            //}
-
-            //void WriteRequestAsyncCB(IAsyncResult ar)
-            //{
-            //    var result = (WebAsyncResult)ar;
-            //    var innerResult = (WebAsyncResult)result.InnerAsyncResult;
-            //    result.InnerAsyncResult = null;
-
-            //    if (innerResult != null && innerResult.GotException)
-            //    {
-            //        result.SetCompleted(false, innerResult.Exception);
-            //        result.DoCallback();
-            //        return;
-            //    }
-
             if (_cnc.Data.StatusCode != 0 && _cnc.Data.StatusCode != 100)
             {
-                //result.SetCompleted(false, 0);
-                //result.DoCallback();
                 return;
             }
 
@@ -999,7 +744,6 @@ namespace SM.Mono.Net
             if (length > 0)
             {
                 _completeRequestWritten = await _cnc.WriteAsync(_request, bytes, 0, length, CancellationToken.None);
-                //result.InnerAsyncResult = _cnc.BeginWrite(_request, bytes, 0, length, WriteRequestAsyncCB2, result);
             }
 
             if (!_initRead)
@@ -1012,32 +756,9 @@ namespace SM.Mono.Net
 
             if (0 == length)
             {
-                //result.SetCompleted(false, 0);
-                //result.DoCallback();
                 _completeRequestWritten = true;
             }
         }
-
-        //void WriteRequestAsyncCB2(IAsyncResult ar)
-        //{
-        //    var result = (WebAsyncResult)ar.AsyncState;
-        //    var innerResult = result.InnerAsyncResult;
-        //    result.InnerAsyncResult = null;
-
-        //    try
-        //    {
-        //        _completeRequestWritten = _cnc.EndWrite(_request, false, innerResult);
-        //        result.SetCompleted(false, 0);
-        //    }
-        //    catch (Exception exc)
-        //    {
-        //        result.SetCompleted(false, exc);
-        //    }
-        //    finally
-        //    {
-        //        result.DoCallback();
-        //    }
-        //}
 
         internal void InternalClose()
         {
