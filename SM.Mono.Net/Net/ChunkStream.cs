@@ -29,27 +29,35 @@
 //
 
 using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Text;
 
+#if SILVERLIGHT 
+using SM.Mono.Text;
+#endif
+
 namespace SM.Mono.Net
 {
     class ChunkStream
     {
-        //byte [] waitBuffer;
-        readonly List<Chunk> _chunks;
-        readonly StringBuilder _saved;
+#if SILVERLIGHT
+        static readonly Encoding HttpEncoding = new Latin1Encoding();
+#else
+        static readonly Encoding HttpEncoding = Encoding.GetEncoding("iso-8859-1");
+#endif
+        readonly MemoryStream _buffer = new MemoryStream();
+        readonly WebHeaderCollection _headers;
+        readonly MemoryStream _saved = new MemoryStream();
         int _chunkRead;
-        int _chunkSize;
+        int _chunkSize = -1;
         bool _gotit;
-        internal WebHeaderCollection headers;
         bool _sawCr;
         State _state;
         int _totalWritten;
         int _trailerState;
+        static readonly byte[] StBytes = { (byte)'\r', (byte)'\n', (byte)'\r' };
 
         public ChunkStream(byte[] buffer, int offset, int size, WebHeaderCollection headers)
             : this(headers)
@@ -59,33 +67,18 @@ namespace SM.Mono.Net
 
         public ChunkStream(WebHeaderCollection headers)
         {
-            this.headers = headers;
-            _saved = new StringBuilder();
-            _chunks = new List<Chunk>();
-            _chunkSize = -1;
+            _headers = headers;
             _totalWritten = 0;
         }
 
         public bool WantMore
         {
-            get { return (_chunkRead != _chunkSize || _chunkSize != 0 || _state != State.None); }
+            get { return _chunkRead != _chunkSize || _chunkSize != 0 || (_state != State.None && _state != State.End); }
         }
 
         public bool DataAvailable
         {
-            get
-            {
-                var count = _chunks.Count;
-                for (var i = 0; i < count; i++)
-                {
-                    var ch = _chunks[i];
-                    if (ch == null || ch.Bytes == null)
-                        continue;
-                    if (ch.Bytes.Length > 0 && ch.Offset < ch.Bytes.Length)
-                        return (_state != State.Body);
-                }
-                return false;
-            }
+            get { return _buffer.Position < _buffer.Length; }
         }
 
         public int TotalDataSize
@@ -103,111 +96,124 @@ namespace SM.Mono.Net
             _chunkSize = -1;
             _chunkRead = 0;
             _totalWritten = 0;
-            _chunks.Clear();
+            _buffer.SetLength(0);
         }
 
         public void WriteAndReadBack(byte[] buffer, int offset, int size, ref int read)
         {
             if (offset + read > 0)
                 Write(buffer, offset, offset + read);
+
             read = Read(buffer, offset, size);
         }
 
         public int Read(byte[] buffer, int offset, int size)
         {
-            return ReadFromChunks(buffer, offset, size);
+            return _buffer.Read(buffer, offset, size);
         }
 
-        int ReadFromChunks(byte[] buffer, int offset, int size)
+        public void Write(byte[] buffer, int begin, int end)
         {
-            var count = _chunks.Count;
-            var nread = 0;
-            for (var i = 0; i < count; i++)
-            {
-                var chunk = _chunks[i];
-                if (chunk == null)
-                    continue;
+            if (begin < end)
+                InternalWrite(buffer, begin, end);
+        }
 
-                if (chunk.Offset == chunk.Bytes.Length)
+        void InternalWrite(byte[] buffer, int begin, int end)
+        {
+            do
+            {
+                if (_state == State.End)
+                    return;
+
+                if (_state == State.None)
                 {
-                    _chunks[i] = null;
-                    continue;
+                    _state = GetChunkSize(buffer, ref begin, end);
+                    if (_state == State.None)
+                        return;
+
+                    _saved.SetLength(0);
+                    _sawCr = false;
+                    _gotit = false;
                 }
 
-                nread += chunk.Read(buffer, offset + nread, size - nread);
-                if (nread == size)
-                    break;
-            }
+                if (_state == State.Body && begin < end)
+                {
+                    _state = ReadBody(buffer, ref begin, end);
+                    if (_state == State.Body)
+                        return;
+                }
 
-            return nread;
+                if (_state == State.BodyFinished && begin < end)
+                {
+                    _state = ReadCRLF(buffer, ref begin, end);
+                    if (_state == State.BodyFinished)
+                        return;
+
+                    _sawCr = false;
+                }
+
+                if (_state == State.Trailer && begin < end)
+                {
+                    _state = ReadTrailer(buffer, ref begin, end);
+                    if (_state == State.Trailer)
+                        return;
+
+                    _saved.SetLength(0);
+                    _sawCr = false;
+                    _gotit = false;
+                }
+            } while (begin < end);
         }
 
-        public void Write(byte[] buffer, int offset, int size)
-        {
-            if (offset < size)
-                InternalWrite(buffer, ref offset, size);
-        }
-
-        void InternalWrite(byte[] buffer, ref int offset, int size)
-        {
-            if (_state == State.None)
-            {
-                _state = GetChunkSize(buffer, ref offset, size);
-                if (_state == State.None)
-                    return;
-
-                _saved.Length = 0;
-                _sawCr = false;
-                _gotit = false;
-            }
-
-            if (_state == State.Body && offset < size)
-            {
-                _state = ReadBody(buffer, ref offset, size);
-                if (_state == State.Body)
-                    return;
-            }
-
-            if (_state == State.BodyFinished && offset < size)
-            {
-                _state = ReadCRLF(buffer, ref offset, size);
-                if (_state == State.BodyFinished)
-                    return;
-
-                _sawCr = false;
-            }
-
-            if (_state == State.Trailer && offset < size)
-            {
-                _state = ReadTrailer(buffer, ref offset, size);
-                if (_state == State.Trailer)
-                    return;
-
-                _saved.Length = 0;
-                _sawCr = false;
-                _gotit = false;
-            }
-
-            if (offset < size)
-                InternalWrite(buffer, ref offset, size);
-        }
-
-        State ReadBody(byte[] buffer, ref int offset, int size)
+        State ReadBody(byte[] buffer, ref int begin, int end)
         {
             if (_chunkSize == 0)
                 return State.BodyFinished;
 
-            var diff = size - offset;
-            if (diff + _chunkRead > _chunkSize)
-                diff = _chunkSize - _chunkRead;
+            var length = end - begin;
+            if (length + _chunkRead > _chunkSize)
+                length = _chunkSize - _chunkRead;
 
-            var chunk = new byte[diff];
-            Buffer.BlockCopy(buffer, offset, chunk, 0, diff);
-            _chunks.Add(new Chunk(chunk));
-            offset += diff;
-            _chunkRead += diff;
-            _totalWritten += diff;
+            AppendBuffer(buffer, begin, length);
+
+            begin += length;
+            _chunkRead += length;
+            _totalWritten += length;
+
             return (_chunkRead == _chunkSize) ? State.BodyFinished : State.Body;
+        }
+
+        void AppendBuffer(byte[] buffer, int offset, int count)
+        {
+            if (null == buffer)
+                throw new ArgumentNullException("buffer");
+            if (offset < 0 || offset >= buffer.Length)
+                throw new ArgumentOutOfRangeException("offset");
+            if (count <= 0 || count + offset > buffer.Length)
+                throw new ArgumentOutOfRangeException("count");
+
+            var position = _buffer.Position;
+
+            if (position > _buffer.Capacity / 4)
+            {
+                var p = _buffer.GetBuffer();
+
+                var newLength = _buffer.Length - position;
+
+                if (newLength > 0)
+                    Array.Copy(p, (int)position, p, 0, (int)newLength);
+
+                _buffer.Position = 0;
+                _buffer.SetLength(newLength);
+
+                position = 0;
+            }
+
+            _buffer.Seek(0, SeekOrigin.End);
+
+            _buffer.Write(buffer, offset, count);
+
+            _buffer.Position = position;
         }
 
         State GetChunkSize(byte[] buffer, ref int offset, int size)
@@ -217,7 +223,8 @@ namespace SM.Mono.Net
             var c = '\0';
             while (offset < size)
             {
-                c = (char)buffer[offset++];
+                var b = buffer[offset++];
+                c = (char)b;
                 if (c == '\r')
                 {
                     if (_sawCr)
@@ -234,7 +241,7 @@ namespace SM.Mono.Net
                     _gotit = true;
 
                 if (!_gotit)
-                    _saved.Append(c);
+                    _saved.WriteByte(b);
 
                 if (_saved.Length > 20)
                     ThrowProtocolViolation("chunk size too long.");
@@ -245,36 +252,39 @@ namespace SM.Mono.Net
                 if (offset < size)
                     ThrowProtocolViolation("Missing \\n");
 
-                try
-                {
-                    if (_saved.Length > 0)
-                        _chunkSize = Int32.Parse(RemoveChunkExtension(_saved.ToString()), NumberStyles.HexNumber);
-                }
-                catch (Exception)
-                {
-                    ThrowProtocolViolation("Cannot parse chunk size.");
-                }
+                if (_saved.Length > 0)
+                    _chunkSize = (int)ParseChunkSize();
 
                 return State.None;
             }
 
             _chunkRead = 0;
-            try
-            {
-                _chunkSize = Int32.Parse(RemoveChunkExtension(_saved.ToString()), NumberStyles.HexNumber);
-            }
-            catch (Exception)
-            {
-                ThrowProtocolViolation("Cannot parse chunk size.");
-            }
+            _chunkSize = (int)ParseChunkSize();
 
             if (_chunkSize == 0)
             {
                 _trailerState = 2;
+
                 return State.Trailer;
             }
 
             return State.Body;
+        }
+
+        long ParseChunkSize()
+        {
+            var chunk = HttpEncoding.GetString(_saved.GetBuffer(), 0, (int)_saved.Length);
+
+            var chunkSize = RemoveChunkExtension(chunk);
+
+            long size;
+            if (!long.TryParse(chunkSize, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out size))
+                ThrowProtocolViolation("Cannot parse chunk size.");
+
+            //if (size > ???)
+            //    throw new WebException("Chunk size too large", null, WebExceptionStatus.UnknownError, null);
+
+            return size;
         }
 
         static string RemoveChunkExtension(string input)
@@ -305,8 +315,6 @@ namespace SM.Mono.Net
 
         State ReadTrailer(byte[] buffer, ref int offset, int size)
         {
-            var c = '\0';
-
             // short path
             if (_trailerState == 2 && (char)buffer[offset] == '\r' && _saved.Length == 0)
             {
@@ -314,16 +322,17 @@ namespace SM.Mono.Net
                 if (offset < size && (char)buffer[offset] == '\n')
                 {
                     offset++;
-                    return State.None;
+                    return State.End;
                 }
                 offset--;
             }
 
             var st = _trailerState;
-            var stString = "\r\n\r";
+
             while (offset < size && st < 4)
             {
-                c = (char)buffer[offset++];
+                var c = (char)buffer[offset++];
+
                 if ((st == 0 || st == 2) && c == '\r')
                 {
                     st++;
@@ -338,7 +347,7 @@ namespace SM.Mono.Net
 
                 if (st > 0)
                 {
-                    _saved.Append(stString.Substring(0, _saved.Length == 0 ? st - 2 : st));
+                    _saved.Write(StBytes, 0, _saved.Length == 0 ? st - 2 : st);
                     st = 0;
                     if (_saved.Length > 4196)
                         ThrowProtocolViolation("Error reading trailer (too long).");
@@ -354,12 +363,16 @@ namespace SM.Mono.Net
                 return State.Trailer;
             }
 
-            var reader = new StringReader(_saved.ToString());
-            string line;
-            while ((line = reader.ReadLine()) != null && line != "")
-                headers.Add(line);
+            using (var reader = new StreamReader(_saved, HttpEncoding, false, 1024, true))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null && line != "")
+                {
+                    _headers.Add(line);
+                }
+            }
 
-            return State.None;
+            return State.End;
         }
 
         static void ThrowProtocolViolation(string message)
@@ -368,29 +381,6 @@ namespace SM.Mono.Net
             throw we;
         }
 
-        #region Nested type: Chunk
-
-        class Chunk
-        {
-            public readonly byte[] Bytes;
-            public int Offset;
-
-            public Chunk(byte[] chunk)
-            {
-                Bytes = chunk;
-            }
-
-            public int Read(byte[] buffer, int offset, int size)
-            {
-                var nread = (size > Bytes.Length - Offset) ? Bytes.Length - Offset : size;
-                Buffer.BlockCopy(Bytes, Offset, buffer, offset, nread);
-                Offset += nread;
-                return nread;
-            }
-        }
-
-        #endregion
-
         #region Nested type: State
 
         enum State
@@ -398,7 +388,8 @@ namespace SM.Mono.Net
             None,
             Body,
             BodyFinished,
-            Trailer
+            Trailer,
+            End
         }
 
         #endregion
