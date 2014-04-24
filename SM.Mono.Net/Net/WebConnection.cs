@@ -116,10 +116,10 @@ namespace SM.Mono.Net
         static extern void monotouch_start_wwan (string uri);
 #endif
 
-        internal ChunkStream ChunkStream
-        {
-            get { return _chunkStream; }
-        }
+        //internal ChunkStream ChunkStream
+        //{
+        //    get { return _chunkStream; }
+        //}
 
         public WebConnection(IWebConnectionState wcs, ServicePoint sPoint)
         {
@@ -652,8 +652,10 @@ namespace SM.Mono.Net
             }
         }
 
-        static async Task ReadDoneAsync(WebConnection cnc, int nread)
+        static async Task ReadDoneAsync(WebConnection cnc)
         {
+            var nread = 0;
+
             var data = cnc.Data;
             var ns = cnc._nstream;
             if (ns == null)
@@ -662,36 +664,6 @@ namespace SM.Mono.Net
                 return;
             }
 
-            //var nread = -1;
-            //try
-            //{
-            //    nread = ns.EndRead(result);
-            //}
-            //catch (ObjectDisposedException)
-            //{
-            //    return;
-            //}
-            //catch (Exception e)
-            //{
-            //    if (e.InnerException is ObjectDisposedException)
-            //        return;
-
-            //    cnc.HandleError(WebExceptionStatus.ReceiveFailure, e, "ReadDone1");
-            //    return;
-            //}
-
-            //if (nread == 0)
-            //{
-            //    cnc.HandleError(WebExceptionStatus.ReceiveFailure, null, "ReadDone2");
-            //    return;
-            //}
-
-            //if (nread < 0)
-            //{
-            //    cnc.HandleError(WebExceptionStatus.ServerProtocolViolation, null, "ReadDone3");
-            //    return;
-            //}
-
             var pos = -1;
             nread += cnc._position;
             if (data.ReadState == ReadState.None)
@@ -699,14 +671,14 @@ namespace SM.Mono.Net
                 Exception exc = null;
                 try
                 {
-                    pos = await GetResponseAsync(cnc._nstream, data, cnc._sPoint).ConfigureAwait(false);
+                    var result = await GetResponseAsync(cnc._nstream, data, cnc._sPoint).ConfigureAwait(false);
                 }
                 catch (Exception e)
                 {
                     exc = e;
                 }
 
-                if (exc != null || pos == -1)
+                if (exc != null)
                 {
                     cnc.HandleError(WebExceptionStatus.ServerProtocolViolation, exc, "ReadDone4");
                     return;
@@ -746,7 +718,7 @@ namespace SM.Mono.Net
             if (!cnc._chunkedRead)
             {
                 stream.ReadBuffer = cnc._buffer;
-                stream.ReadBufferOffset = pos;
+                stream.ReadBufferOffset = 0;
                 stream.ReadBufferSize = nread;
                 try
                 {
@@ -761,7 +733,7 @@ namespace SM.Mono.Net
             {
                 try
                 {
-                    cnc._chunkStream = new ChunkStream(cnc._buffer, pos, nread, data.Headers);
+                    cnc._chunkStream = new ChunkStream(cnc._buffer, 0, nread, data.Headers);
                 }
                 catch (Exception e)
                 {
@@ -774,7 +746,7 @@ namespace SM.Mono.Net
                 cnc._chunkStream.ResetBuffer();
                 try
                 {
-                    cnc._chunkStream.Write(cnc._buffer, pos, nread);
+                    cnc._chunkStream.Write(cnc._buffer, 0, nread);
                 }
                 catch (Exception e)
                 {
@@ -825,15 +797,9 @@ namespace SM.Mono.Net
 
         internal static async Task StartRead(WebConnection cnc)
         {
-            var ns = cnc._nstream;
-
             try
             {
-                //var size = cnc._buffer.Length - cnc._position;
-                ////ns.BeginRead(cnc._buffer, cnc.position, size, readDoneDelegate, cnc);
-                //var read = await ns.ReadAsync(cnc._buffer, cnc._position, size).ConfigureAwait(false);
-
-                await ReadDoneAsync(cnc, 0);
+                await ReadDoneAsync(cnc);
             }
             catch (Exception e)
             {
@@ -1089,57 +1055,11 @@ namespace SM.Mono.Net
             }
         }
 
-        //static async Task<string> ReadLineAsync(StreamSocketStream stream)
-        //{
-        //    var foundCR = false;
-        //    var text = new StringBuilder();
-
-        //    var c = (char) 0;
-        //    while (start < max)
-        //    {
-        //        c = (char) buffer[start++];
-
-        //        if (c == '\n')
-        //        {
-        //            // newline
-        //            if ((text.Length > 0) && (text[text.Length - 1] == '\r'))
-        //                text.Length--;
-
-        //            foundCR = false;
-        //            break;
-        //        }
-        //        if (foundCR)
-        //        {
-        //            text.Length--;
-        //            break;
-        //        }
-
-        //        if (c == '\r')
-        //            foundCR = true;
-
-        //        text.Append(c);
-        //    }
-
-        //    if (c != '\n' && c != '\r')
-        //        return false;
-
-        //    if (text.Length == 0)
-        //    {
-        //        output = null;
-        //        return (c == '\n' || c == '\r');
-        //    }
-
-        //    if (foundCR)
-        //        text.Length--;
-
-        //    output = text.ToString();
-
-        //    return true;
-        //}
-
         internal async Task<int> ReadAsync(HttpWebRequest request, byte[] buffer, int offset, int size, CancellationToken cancellationToken)
         {
-            StreamSocketStream s = null;
+            //Debug.WriteLine("WebConnection.ReadAsync(buffer, {0}, {1}, cancellationToken)", offset, size);
+
+            StreamSocketStream s;
             lock (this)
             {
                 if (Data.Request != request)
@@ -1149,18 +1069,27 @@ namespace SM.Mono.Net
                 s = _nstream;
             }
 
-            //IAsyncResult result = null;
             var nbytes = 0;
             var done = false;
             if (!_chunkedRead || (!_chunkStream.DataAvailable && _chunkStream.WantMore))
             {
                 try
                 {
+                    //Debug.WriteLine("WebConnection.ReadAsync(buffer, {0}, {1}, cancellationToken) calling socket read, chunkedRead {2} dataAvail {3} wantMore {4}",
+                    //    offset, size, _chunkedRead,
+                    //    null == _chunkStream ? "<null>" : _chunkStream.DataAvailable.ToString(),
+                    //    null == _chunkStream ? "<null>" : _chunkStream.WantMore.ToString());
+
                     nbytes = await s.ReadAsync(buffer, offset, size, cancellationToken).ConfigureAwait(false);
                     done = nbytes == 0;
 
-                    //result = s.BeginRead(buffer, offset, size, cb, state);
-                    //cb = null;
+                    //Debug.WriteLine("WebConnection.ReadAsync(buffer, {0}, {1}, cancellationToken) socket read returned, chunkedRead {2} dataAvail {3} wantMore {4} nbytes {5}",
+                    //    offset, size, _chunkedRead,
+                    //    null == _chunkStream ? "<null>" : _chunkStream.DataAvailable.ToString(),
+                    //    null == _chunkStream ? "<null>" : _chunkStream.WantMore.ToString(),
+                    //    nbytes);
+
+                    //DumpBase64(buffer, offset, nbytes);
                 }
                 catch (Exception)
                 {
@@ -1169,19 +1098,7 @@ namespace SM.Mono.Net
                 }
             }
 
-            if (_chunkedRead)
-                return -1; // TODO: What should this return?
-            //{
-            //    var wr = new WebAsyncResult(cb, state, buffer, offset, size);
-            //    wr.InnerAsyncResult = result;
-            //    if (result == null)
-            //    {
-            //        // Will be completed from the data in ChunkStream
-            //        wr.SetCompleted(true, (Exception) null);
-            //        wr.DoCallback();
-            //    }
-            //    return wr;
-            //}
+            //Debug.WriteLine("WebConnection.ReadAsync(buffer, {0}, {1}, cancellationToken) read {2} done {3}", offset, size, nbytes, done);
 
             lock (this)
             {
@@ -1192,32 +1109,20 @@ namespace SM.Mono.Net
                 s = _nstream;
             }
 
-            //WebAsyncResult wr = null;
-            //var nsAsync = ((WebAsyncResult) result).InnerAsyncResult;
-            //if (_chunkedRead && (nsAsync is WebAsyncResult))
-            //{
-            //    wr = (WebAsyncResult) nsAsync;
-            //    var inner = wr.InnerAsyncResult;
-            //    if (inner != null && !(inner is WebAsyncResult))
-            //    {
-            //        nbytes = s.EndRead(inner);
-            //        done = nbytes == 0;
-            //    }
-            //}
-            //else if (!(nsAsync is WebAsyncResult))
-            //{
-            //    nbytes = s.EndRead(nsAsync);
-            //    wr = (WebAsyncResult) result;
-            //    done = nbytes == 0;
-            //}
-
             if (_chunkedRead)
             {
                 try
                 {
+                    //Debug.WriteLine("WebConnection.ReadAsync(buffer, {0}, {1}, cancellationToken) calling WriteAndReadBack {2}", offset, size, nbytes);
+
                     _chunkStream.WriteAndReadBack(buffer, offset, size, ref nbytes);
+
                     if (!done && nbytes == 0 && _chunkStream.WantMore)
-                        nbytes = await EnsureReadAsync(buffer, offset, size).ConfigureAwait(false);
+                    {
+                        nbytes = await EnsureReadAsync(buffer, offset, size, cancellationToken).ConfigureAwait(false);
+
+                        //Debug.WriteLine("WebConnection.ReadAsync(buffer, {0}, {1}, cancellationToken) EnsureReadAsync returned {2}", offset, size, nbytes);
+                    }
                 }
                 catch (Exception e)
                 {
@@ -1235,17 +1140,33 @@ namespace SM.Mono.Net
                 }
             }
 
-            return (nbytes != 0) ? nbytes : -1;
+            var ret = (nbytes != 0) ? nbytes : -1;
+
+            //Debug.WriteLine("WebConnection.ReadAsync(buffer, {0}, {1}, cancellationToken) returning {2} (nbytes {3})", offset, size, ret, nbytes);
+
+            return ret;
+        }
+
+        static void DumpBase64(byte[] buffer, int offset, int nbytes)
+        {
+            for (var i = 0; i < nbytes; i += 48)
+            {
+                var count = Math.Min(nbytes - i, 48);
+
+                Debug.WriteLine(Convert.ToBase64String(buffer, offset + i, count));
+            }
         }
 
         // To be called on chunkedRead when we can read no data from the ChunkStream yet
-        async Task<int> EnsureReadAsync(byte[] buffer, int offset, int size)
+        async Task<int> EnsureReadAsync(byte[] buffer, int offset, int size, CancellationToken cancellationToken)
         {
             byte[] morebytes = null;
             var nbytes = 0;
+
             while (nbytes == 0 && _chunkStream.WantMore)
             {
                 var localsize = _chunkStream.ChunkLeft;
+
                 if (localsize <= 0) // not read chunk size yet
                     localsize = 1024;
                 else if (localsize > 16384)
@@ -1254,12 +1175,26 @@ namespace SM.Mono.Net
                 if (morebytes == null || morebytes.Length < localsize)
                     morebytes = new byte[localsize];
 
-                var nread = await _nstream.ReadAsync(morebytes, 0, localsize, CancellationToken.None).ConfigureAwait(false);
+                //Debug.WriteLine("WebConnection.EnsureReadAsync(buffer, {0}, {1}, cancellationToken) calling socket read, chunkedRead {2} dataAvail {3} wantMore {4}",
+                //    offset, size, _chunkedRead,
+                //    null == _chunkStream ? "<null>" : _chunkStream.DataAvailable.ToString(),
+                //    null == _chunkStream ? "<null>" : _chunkStream.WantMore.ToString());
+
+                var nread = await _nstream.ReadAsync(morebytes, 0, localsize, cancellationToken).ConfigureAwait(false);
+
+                //Debug.WriteLine("WebConnection.EnsureReadAsync(buffer, {0}, {1}, cancellationToken) socket read returned, chunkedRead {2} dataAvail {3} wantMore {4} nbytes {5}",
+                //    offset, size, _chunkedRead,
+                //    null == _chunkStream ? "<null>" : _chunkStream.DataAvailable.ToString(),
+                //    null == _chunkStream ? "<null>" : _chunkStream.WantMore.ToString(),
+                //    nbytes);
 
                 if (nread <= 0)
                     return 0; // Error
 
+                //DumpBase64(morebytes, 0, nread);
+
                 _chunkStream.Write(morebytes, 0, nread);
+                
                 nbytes += _chunkStream.Read(buffer, offset + nbytes, size - nbytes);
             }
 
