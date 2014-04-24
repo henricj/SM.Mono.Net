@@ -31,6 +31,7 @@
 //
 
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -277,6 +278,8 @@ namespace SM.Mono.Net
 
         internal async Task ReadAllAsync()
         {
+            //Debug.WriteLine("WebConnectionStream.ReadAllAsync()");
+
             if (!_isRead || _readEof || _totalRead >= _contentLength || _nextReadCalled)
             {
                 if (_isRead && !_nextReadCalled)
@@ -395,6 +398,8 @@ namespace SM.Mono.Net
 
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int size, CancellationToken cancellationToken)
         {
+            //Debug.WriteLine("WebConnectionStream.ReadAsync(buffer, {0}, {1}, cancellationToken)", offset, size);
+
             if (!_isRead)
                 throw new NotSupportedException("this stream does not allow reading");
 
@@ -404,54 +409,71 @@ namespace SM.Mono.Net
             var length = buffer.Length;
             if (offset < 0 || length < offset)
                 throw new ArgumentOutOfRangeException("offset");
-            if (size < 0 || (length - offset) < size)
+            if (size < 1 || (length - offset) < size)
                 throw new ArgumentOutOfRangeException("size");
 
-            if (_totalRead >= _contentLength)
-            {
+            if (_totalRead >= _contentLength || _readEof)
                 return 0;
-            }
 
-            lock (_locker)
-            {
-                _pendingReads++;
-                _pending.Reset();
-            }
-
-            var nbytes2 = 0;
-
-            var remaining = _readBufferSize - _readBufferOffset;
-            if (remaining > 0)
-            {
-                var copy = (remaining > size) ? size : remaining;
-                Buffer.BlockCopy(_readBuffer, _readBufferOffset, buffer, offset, copy);
-                _readBufferOffset += copy;
-                offset += copy;
-                size -= copy;
-                _totalRead += copy;
-                if (size == 0 || _totalRead >= _contentLength)
-                {
-                    return copy;
-                }
-
-                nbytes2 = copy;
-            }
-
-            if (_contentLength != long.MaxValue && _contentLength - _totalRead < size)
-                size = (int)(_contentLength - _totalRead);
-
-            if (_readEof)
-            {
-                return nbytes2;
-            }
-
-            int nbytes;
-
+            int nb;
             try
             {
-                nbytes = await _cnc.ReadAsync(_request, buffer, offset, size, cancellationToken).ConfigureAwait(false);
+                lock (_locker)
+                {
+                    _pendingReads++;
+                    _pending.Reset();
+                }
+
+                var nbytes2 = 0;
+
+                var remaining = _readBufferSize - _readBufferOffset;
+                if (remaining > 0)
+                {
+                    var copy = (remaining > size) ? size : remaining;
+                    Buffer.BlockCopy(_readBuffer, _readBufferOffset, buffer, offset, copy);
+                    _readBufferOffset += copy;
+                    offset += copy;
+                    size -= copy;
+                    _totalRead += copy;
+                    if (size == 0 || _totalRead >= _contentLength)
+                    {
+                        return copy;
+                    }
+
+                    nbytes2 = copy;
+                }
+
+                if (_contentLength != long.MaxValue && _contentLength - _totalRead < size)
+                    size = (int) (_contentLength - _totalRead);
+
+                int nbytes;
+
+                try
+                {
+                    nbytes = await _cnc.ReadAsync(_request, buffer, offset, size, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    _nextReadCalled = true;
+                    _cnc.Close(true);
+
+                    throw;
+                }
+
+                if (nbytes < 0)
+                {
+                    nbytes = 0;
+                    _readEof = true;
+                }
+
+                _totalRead += nbytes;
+
+                if (0 == nbytes)
+                    _contentLength = _totalRead;
+
+                nb = nbytes + nbytes2;
             }
-            catch (Exception)
+            finally
             {
                 lock (_locker)
                 {
@@ -459,37 +481,16 @@ namespace SM.Mono.Net
                     if (_pendingReads == 0)
                         _pending.Set();
                 }
-
-                _nextReadCalled = true;
-                _cnc.Close(true);
-
-                throw;
-            }
-
-            if (nbytes < 0)
-            {
-                nbytes = 0;
-                _readEof = true;
-            }
-
-            _totalRead += nbytes;
-
-            if (0 == nbytes)
-                _contentLength = _totalRead;
-
-            lock (_locker)
-            {
-                _pendingReads--;
-                if (_pendingReads == 0)
-                    _pending.Set();
             }
 
             if (_totalRead >= _contentLength && !_nextReadCalled)
                 await ReadAllAsync().ConfigureAwait(false);
 
-            var nb = nbytes + nbytes2;
+            var ret = (nb >= 0) ? nb : 0;
 
-            return (nb >= 0) ? nb : 0;
+            //Debug.WriteLine("WebConnectionStream.ReadAsync(buffer, {0}, {1}, cancellationToken) returning {2} (nb {3} total {4})", offset, size, ret, nb, _totalRead);
+
+            return ret;
         }
 
         public override IAsyncResult BeginWrite(byte[] buffer, int offset, int size,
@@ -784,7 +785,7 @@ namespace SM.Mono.Net
                 _pending.WaitOne();
 
                 await _cnc.WriteAsync(_request, ZeroChunk, 0, ZeroChunk.Length, CancellationToken.None).ConfigureAwait(false);
-                
+
                 return;
             }
 
