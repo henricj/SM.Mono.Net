@@ -32,12 +32,14 @@
 //
 
 using System;
-using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading.Tasks;
 using Windows.Networking;
 using Windows.Networking.Sockets;
+using Windows.Storage.Streams;
 #if !NET_2_1 || MOBILE
 //using System.Timers;
 using System.Threading;
@@ -50,13 +52,11 @@ namespace SM.Mono.Net.Sockets
     {
         FileAccess _access;
         StreamSocket _socket;
-        Stream _inputStream;
         readonly bool _ownsSocket;
         bool _readable, _writeable;
         bool _disposed;
         Stream _outputStream;
         MemoryStream _unreadData;
-        bool _unreadRead;
 
         public StreamSocketStream(StreamSocket socket, bool ownsSocket)
             : this(socket, FileAccess.ReadWrite, ownsSocket)
@@ -167,24 +167,6 @@ namespace SM.Mono.Net.Sockets
         int ReceiveTimeout { get; set; }
 #endif
 
-        protected Stream InputStream
-        {
-            get
-            {
-                if (null != _inputStream)
-                    return _inputStream;
-
-                var s = _socket;
-
-                if (s == null)
-                    throw new IOException("Connection closed");
-
-                _inputStream = s.InputStream.AsStreamForRead();
-
-                return _inputStream;
-            }
-        }
-
         protected Stream OutputStream
         {
             get
@@ -239,7 +221,7 @@ namespace SM.Mono.Net.Sockets
         int SendTimeout { get; set; }
 #endif
 
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             CheckDisposed();
 
@@ -256,10 +238,56 @@ namespace SM.Mono.Net.Sockets
                 if (_unreadData.Position >= _unreadData.Length)
                     AdjustBuffer();
                 else
-                    return _unreadData.ReadAsync(buffer, offset, count, cancellationToken);
+                {
+                    //Debug.WriteLine("StreamSocketStream.ReadAsync(buffer, {0}, {1}, cancellationToken) buffered read (position {2} length {3})",
+                    //    offset, count, _unreadData.Position, _unreadData.Length);
+                    return await _unreadData.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
+                }
             }
 
-            return InputStream.ReadAsync(buffer, offset, count, cancellationToken);
+            //Debug.WriteLine("StreamSocketStream.ReadAsync(buffer, {0}, {1}, cancellationToken) input read", offset, count);
+
+            var winrtBuffer = buffer.AsBuffer(offset, count);
+
+            IBuffer resultBuffer;
+
+            try
+            {
+                resultBuffer = await _socket.InputStream
+                                            .ReadAsync(winrtBuffer, (uint)count, InputStreamOptions.Partial)
+                                            .AsTask(cancellationToken)
+                                            .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                var socketError = SocketError.GetStatus(ex.HResult);
+
+                if (socketError == SocketErrorStatus.ConnectionResetByPeer)
+                    return 0; // Could there be any data in the winrtBuffer?  How would we know?
+
+                throw;
+            }
+
+            if (null == resultBuffer)
+                return 0;
+
+            if (winrtBuffer.IsSameData(resultBuffer))
+                return (int)winrtBuffer.Length;
+
+            var length = (int)resultBuffer.Length;
+
+            if (length <= count)
+            {
+                resultBuffer.CopyTo(0U, buffer, offset, length);
+
+                return length;
+            }
+
+            resultBuffer.CopyTo(0U, buffer, offset, count);
+
+            AppendBuffer(resultBuffer, count);
+
+            return count;
         }
 
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
@@ -281,29 +309,22 @@ namespace SM.Mono.Net.Sockets
         public override IAsyncResult BeginRead(byte[] buffer, int offset, int size,
             AsyncCallback callback, object state)
         {
-            CheckDisposed();
+            var tcs = new TaskCompletionSource<object>();
 
-            if (buffer == null)
-                throw new ArgumentNullException("buffer");
-            var len = buffer.Length;
-            if (offset < 0 || offset > len)
-                throw new ArgumentOutOfRangeException("offset", "offset exceeds the size of buffer");
-            if (size < 0 || offset + size > len)
-                throw new ArgumentOutOfRangeException("size", "offset+size exceeds the size of buffer");
+            ReadAsync(buffer, offset, size, CancellationToken.None)
+                .ContinueWith(t =>
+                              {
+                                  if (t.IsFaulted)
+                                      tcs.TrySetException(t.Exception);
+                                  else if (t.IsCanceled)
+                                      tcs.TrySetCanceled();
+                                  else
+                                      tcs.TrySetResult(string.Empty);
 
-            if (null != _unreadData && _unreadData.Length > 0)
-            {
-                _unreadRead = true;
+                                  callback(t);
+                              });
 
-                if (_unreadData.Position >= _unreadData.Length)
-                    AdjustBuffer();
-                else
-                    return _unreadData.BeginRead(buffer, offset, size, callback, state);
-            }
-
-            _unreadRead = false;
-
-            return InputStream.BeginRead(buffer, offset, size, callback, state);
+            return tcs.Task;
         }
 
         public override IAsyncResult BeginWrite(byte[] buffer, int offset, int size,
@@ -353,12 +374,6 @@ namespace SM.Mono.Net.Sockets
                 return;
             _disposed = true;
 
-            if (null != _inputStream)
-            {
-                _inputStream.Dispose();
-                _inputStream = null;
-            }
-
             if (null != _outputStream)
             {
                 _outputStream.Dispose();
@@ -382,12 +397,9 @@ namespace SM.Mono.Net.Sockets
             if (ar == null)
                 throw new ArgumentNullException("ar");
 
-            var s = _unreadRead ? _unreadData : _inputStream;
+            var task = (Task<int>)ar;
 
-            if (s == null)
-                throw new IOException("Connection closed");
-
-            return s.EndRead(ar);
+            return task.Result;
         }
 
         public override void EndWrite(IAsyncResult ar)
@@ -406,48 +418,18 @@ namespace SM.Mono.Net.Sockets
 
         public override void Flush()
         {
-            // network streams are non-buffered, this is a no-op
-
-            if (null != _inputStream)
-                _inputStream.Flush();
-
             if (null != _outputStream)
                 _outputStream.Flush();
         }
 
         public override Task FlushAsync(CancellationToken cancellationToken)
         {
-            var tasks = new List<Task>();
-
-            if (null != _inputStream)
-                tasks.Add(_inputStream.FlushAsync(cancellationToken));
-
-            if (null != _outputStream)
-                tasks.Add(_outputStream.FlushAsync(cancellationToken));
-
-            return Task.WhenAll(tasks);
+            return _outputStream.FlushAsync(cancellationToken);
         }
 
         public override int Read([In, Out] byte[] buffer, int offset, int size)
         {
-            CheckDisposed();
-
-            if (buffer == null)
-                throw new ArgumentNullException("buffer");
-            if (offset < 0 || offset > buffer.Length)
-                throw new ArgumentOutOfRangeException("offset", "offset exceeds the size of buffer");
-            if (size < 0 || offset + size > buffer.Length)
-                throw new ArgumentOutOfRangeException("size", "offset+size exceeds the size of buffer");
-
-            if (null != _unreadData && _unreadData.Length > 0)
-            {
-                if (_unreadData.Position >= _unreadData.Length)
-                    AdjustBuffer();
-                else
-                    return _unreadData.Read(buffer, offset, size);
-            }
-
-            return InputStream.Read(buffer, offset, size);
+            return ReadAsync(buffer, offset, size).Result;
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -512,10 +494,7 @@ namespace SM.Mono.Net.Sockets
 
             CheckDisposed();
 
-            if (null == _unreadData)
-                _unreadData = new MemoryStream();
-            else
-                AdjustBuffer();
+            AdjustBuffer();
 
             _unreadData.Write(buffer, offset, count);
 
@@ -524,6 +503,12 @@ namespace SM.Mono.Net.Sockets
 
         void AdjustBuffer()
         {
+            if (null == _unreadData)
+            {
+                _unreadData = new MemoryStream();
+                return;
+            }
+
             var length = _unreadData.Length;
 
             if (0 == length)
@@ -550,6 +535,33 @@ namespace SM.Mono.Net.Sockets
 
             _unreadData.Position = 0;
             _unreadData.SetLength(newLength);
+        }
+
+        void AppendBuffer(IBuffer buffer, int skip)
+        {
+            AdjustBuffer();
+
+            Debug.Assert(null != _unreadData);
+
+            var bufferLength = buffer.Length - skip;
+
+            var capacity = _unreadData.Capacity;
+            var requiredCapacity = _unreadData.Length + bufferLength;
+
+            if (capacity < requiredCapacity)
+            {
+                if (capacity < 1024)
+                    capacity = 1024;
+
+                while (capacity < requiredCapacity)
+                    capacity += capacity / 2;
+            }
+
+            var unreadBuffer = _unreadData.GetBuffer();
+
+            buffer.CopyTo(0U, unreadBuffer, (int)_unreadData.Position, (int)bufferLength);
+
+            _unreadData.SetLength(buffer.Length + bufferLength);
         }
     }
 }
