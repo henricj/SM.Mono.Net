@@ -19,7 +19,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -37,10 +36,10 @@ namespace SM.Mono.Utility
         const int MaximumRead = 1024;
 
         readonly Encoding _encoding;
-        readonly MemoryStream _ms = new MemoryStream(InitialCapacity);
         readonly StreamSocketStream _stream;
         bool _badLine;
         int _begin;
+        byte[] _buffer = new byte[InitialCapacity];
         int _end;
 
         public HttpLineReader(StreamSocketStream stream, Encoding encoding = null)
@@ -56,9 +55,7 @@ namespace SM.Mono.Utility
 
         public void Dispose()
         {
-            _ms.Capacity = 0;
-
-            _ms.Dispose();
+            _buffer = null;
         }
 
         #endregion
@@ -67,7 +64,6 @@ namespace SM.Mono.Utility
         {
             _begin = 0;
             _end = 0;
-            _ms.SetLength(0);
         }
 
         public async Task<string> ReadLineAsync(CancellationToken cancellationToken)
@@ -76,9 +72,7 @@ namespace SM.Mono.Utility
 
             for (; ; )
             {
-                var buffer = _ms.GetBuffer();
-
-                var eolIndex = FindLine(buffer);
+                var eolIndex = FindLine();
 
                 if (eolIndex >= 0)
                 {
@@ -89,32 +83,45 @@ namespace SM.Mono.Utility
                     if (_badLine)
                         _badLine = false;
                     else
-                        return CreateString(buffer, begin, eolIndex);
+                        return CreateString(begin, eolIndex);
                 }
 
-                var remaining = _ms.Capacity - _end;
+                var remaining = _buffer.Length - _end;
 
                 if (_begin > 0)
                 {
-                    if (remaining < 128 || _begin > _ms.Capacity - 128)
+                    if (remaining < 128 || _begin > _buffer.Length - 128)
                     {
                         var size = _end - _begin;
 
-                        Array.Copy(buffer, _begin, buffer, 0, size);
+                        Array.Copy(_buffer, _begin, _buffer, 0, size);
                         _begin = 0;
                         _end -= size;
 
-                        remaining = _ms.Capacity - _end;
+                        remaining = _buffer.Length - _end;
                     }
                 }
 
                 if (remaining < ResizeRead)
                 {
-                    if (_ms.Capacity < MaximumCapacity)
+                    if (_buffer.Length < MaximumCapacity)
                     {
-                        _ms.Capacity = Math.Min(MaximumCapacity, 2 * _ms.Capacity);
+                        var newBuffer = new byte[Math.Min(MaximumCapacity, 2 * _buffer.Length)];
 
-                        remaining = _ms.Capacity - _end;
+                        if (_end > _begin)
+                        {
+                            Array.Copy(_buffer, _begin, newBuffer, 0, _end - _begin);
+                            _end = _end - _begin;
+                            _begin = 0;
+                        }
+                        else
+                        {
+                            _begin = _end = 0;
+                        }
+
+                        _buffer = newBuffer;
+
+                        remaining = _buffer.Length - _end;
 
                         if (remaining < MinimumRead)
                         {
@@ -123,14 +130,14 @@ namespace SM.Mono.Utility
 
                             _badLine = true;
 
-                            remaining = _ms.Capacity - _end;
+                            remaining = _buffer.Length - _end;
                         }
                     }
                 }
 
                 var readLength = Math.Min(remaining, MaximumRead);
 
-                var length = await _stream.ReadAsync(buffer, _end, readLength, cancellationToken).ConfigureAwait(false);
+                var length = await _stream.ReadAsync(_buffer, _end, readLength, cancellationToken).ConfigureAwait(false);
 
                 if (length < 1)
                 {
@@ -141,18 +148,18 @@ namespace SM.Mono.Utility
                         return null;
                     }
 
-                    return CreateString(buffer, _begin, _end);
+                    return CreateString(_begin, _end);
                 }
 
                 _end += length;
             }
         }
 
-        int FindLine(byte[] buffer)
+        int FindLine()
         {
             for (var i = _begin; i < _end; ++i)
             {
-                var ch = buffer[i];
+                var ch = _buffer[i];
 
                 if ('\n' == ch)
                     return i + 1;
@@ -161,7 +168,7 @@ namespace SM.Mono.Utility
                 {
                     if (i + 1 < _end)
                     {
-                        if ('\n' == buffer[i + 1])
+                        if ('\n' == _buffer[i + 1])
                             return i + 2;
 
                         return i + 1;
@@ -177,25 +184,25 @@ namespace SM.Mono.Utility
             var size = _end - _begin;
 
             if (size > 0)
-                _stream.Unread(_ms.GetBuffer(), _begin, size);
+                _stream.Unread(_buffer, _begin, size);
 
             Clear();
         }
 
-        string CreateString(byte[] buffer, int begin, int end)
+        string CreateString(int begin, int end)
         {
             var length = end - begin;
 
             if (length < 1)
                 return null;
 
-            var lastCh = (char)buffer[end - 1];
+            var lastCh = (char)_buffer[end - 1];
 
             switch (lastCh)
             {
                 case '\n':
                     --end;
-                    if (end > begin && '\r' == (char)buffer[end - 1])
+                    if (end > begin && '\r' == (char)_buffer[end - 1])
                         --end;
                     break;
                 case '\r':
@@ -205,7 +212,7 @@ namespace SM.Mono.Utility
                     return null;
             }
 
-            var line = end > begin ? _encoding.GetString(buffer, begin, end - begin) : string.Empty;
+            var line = end > begin ? _encoding.GetString(_buffer, begin, end - begin) : string.Empty;
 
             return line;
         }
