@@ -129,9 +129,9 @@ namespace SM.Mono.Net
             Data = new WebConnectionData();
             _queue = wcs.Group.Queue;
             abortHelper = new AbortHelper
-                          {
-                              Connection = this
-                          };
+            {
+                Connection = this
+            };
             _abortHandler = abortHelper.Abort;
         }
 
@@ -205,7 +205,6 @@ namespace SM.Mono.Net
 #endif
             }
 
-            //WebConnectionData data = Data;
             foreach (var address in hostEntry.AddressList)
             {
                 lock (_socketLock)
@@ -241,7 +240,8 @@ namespace SM.Mono.Net
                     }
                 }
 
-                var remote = new IPEndPoint(address, _sPoint.Address.Port);
+                var port = _sPoint.Address.Port;
+                var remote = new IPEndPoint(address, port);
 
                 IPEndPoint local;
                 if (!_sPoint.GetLocalEndPointFromDelegate(remote, out local))
@@ -265,23 +265,10 @@ namespace SM.Mono.Net
                     if (request.Aborted)
                         return;
 
-                    HostName localHostName = null;
-                    var localServiceName = string.Empty;
+                    var remoteHostName = new HostName(request.RequestUri.Host);
+                    var remoteServiceName = port.ToString(CultureInfo.InvariantCulture);
 
-                    if (null != local)
-                    {
-                        localHostName = new HostName(local.Address.ToString());
-
-                        if (local.Port > 0)
-                            localServiceName = local.Port.ToString(CultureInfo.InvariantCulture);
-                    }
-
-                    var remoteHostName = new HostName(remote.Address.ToString());
-                    var remoteServiceName = remote.Port.ToString(CultureInfo.InvariantCulture);
-
-                    var endpointPair = new EndpointPair(localHostName, localServiceName, remoteHostName, remoteServiceName);
-
-                    await _socket.ConnectAsync(endpointPair).AsTask().ConfigureAwait(false);
+                    await _socket.ConnectAsync(remoteHostName, remoteServiceName, _ssl ? SocketProtectionLevel.Ssl : SocketProtectionLevel.PlainSocket).AsTask().ConfigureAwait(false);
 
                     _status = WebExceptionStatus.Success;
 
@@ -565,44 +552,8 @@ namespace SM.Mono.Net
             {
                 var serverStream = new StreamSocketStream(_socket, false);
 
-                if (request.Address.Scheme == Uri.UriSchemeHttps)
-                {
-                    _ssl = true;
-                    EnsureSSLStreamAvailable();
-                    if (!_reused || _nstream == null || _nstream.GetType() != _sslStream)
-                    {
-                        //byte[] buffer = null;
-                        if (_sPoint.UseConnect)
-                        {
-                            var ok = await CreateTunnelAsync(request, _sPoint.Address, serverStream /*, out buffer */).ConfigureAwait(false);
-                            if (!ok)
-                                return false;
-                        }
-#if SECURITY_DEP
-#if MONOTOUCH
-                        _nstream = new HttpsClientStream (serverStream, request.ClientCertificates, request, buffer);
-#else
-                        object[] args = new object [4] { serverStream,
-                            request.ClientCertificates,
-                            request, buffer};
-                        _nstream = (Stream) Activator.CreateInstance (sslStream, args);
-#endif
-                        SslClientStream scs = (SslClientStream) nstream;
-                        var helper = new ServicePointManager.ChainValidationHelper (request, request.Address.Host);
-                        scs.ServerCertValidation2 += new CertificateValidationCallback2 (helper.ValidateChain);
-#endif
-                        _certsAvailable = false;
-                    }
-                    // we also need to set ServicePoint.Certificate 
-                    // and ServicePoint.ClientCertificate but this can
-                    // only be done later (after handshake - which is
-                    // done only after a read operation).
-                }
-                else
-                {
-                    _ssl = false;
-                    _nstream = serverStream;
-                }
+                _ssl = request.Address.Scheme == Uri.UriSchemeHttps;
+                _nstream = serverStream;
             }
             catch (Exception)
             {
@@ -789,10 +740,13 @@ namespace SM.Mono.Net
         {
             StartRead(cnc)
                 .ContinueWith(t =>
-                              {
-                                  if (t.IsFaulted)
-                                      cnc.HandleError(WebExceptionStatus.UnknownError, t.Exception, "InitRead");
-                              });
+                {
+                    if (t.IsFaulted)
+                        cnc.HandleError(WebExceptionStatus.UnknownError, t.Exception, "InitRead");
+
+                    if (ReadState.Aborted == cnc.Data.ReadState)
+                        cnc.HandleError(WebExceptionStatus.ConnectFailure, null, "InitRead");
+                });
         }
 
         internal static async Task StartRead(WebConnection cnc)
@@ -824,7 +778,10 @@ namespace SM.Mono.Net
                         var line = await lineReader.ReadLineAsync(CancellationToken.None).ConfigureAwait(false);
 
                         if (null == line)
+                        {
+                            data.ReadState = ReadState.Aborted;
                             return 0;
+                        }
 
                         if (string.IsNullOrEmpty(line))
                         {
@@ -991,11 +948,11 @@ namespace SM.Mono.Net
                     var task = InitConnectionAsync(request);
 
                     task.ContinueWith(t =>
-                                      {
-                                          var ex = t.Exception;
-                                          if (null != ex)
-                                              Debug.WriteLine("InitConnectionAsync failed: " + ex.Message);
-                                      });
+                    {
+                        var ex = t.Exception;
+                        if (null != ex)
+                            Debug.WriteLine("InitConnectionAsync failed: " + ex.Message);
+                    });
                 }
                 else
                 {
@@ -1194,7 +1151,7 @@ namespace SM.Mono.Net
                 //DumpBase64(morebytes, 0, nread);
 
                 _chunkStream.Write(morebytes, 0, nread);
-                
+
                 nbytes += _chunkStream.Read(buffer, offset + nbytes, size - nbytes);
             }
 
