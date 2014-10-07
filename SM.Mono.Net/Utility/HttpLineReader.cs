@@ -95,8 +95,9 @@ namespace SM.Mono.Utility
                         var size = _end - _begin;
 
                         Array.Copy(_buffer, _begin, _buffer, 0, size);
+
                         _begin = 0;
-                        _end -= size;
+                        _end = size;
 
                         remaining = _buffer.Length - _end;
                     }
@@ -110,9 +111,12 @@ namespace SM.Mono.Utility
 
                         if (_end > _begin)
                         {
-                            Array.Copy(_buffer, _begin, newBuffer, 0, _end - _begin);
-                            _end = _end - _begin;
+                            var size = _end - _begin;
+
+                            Array.Copy(_buffer, _begin, newBuffer, 0, size);
+
                             _begin = 0;
+                            _end = size;
                         }
                         else
                         {
