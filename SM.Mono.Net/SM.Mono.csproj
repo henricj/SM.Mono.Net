@@ -151,6 +151,14 @@
     <Compile Include="Security.Cryptography.X509Certificates\X509Certificate2.cs" />
     <Compile Include="Security.Cryptography.X509Certificates\X509CertificateCollection.cs" />
     <Compile Include="Security.Cryptography.X509Certificates\X509Chain.cs" />
+    <Compile Include="Text\ASCIIEncoding.cs" />
+    <Compile Include="Text\DecoderExceptionFallback.cs" />
+    <Compile Include="Text\DecoderExceptionFallbackBuffer.cs" />
+    <Compile Include="Text\DecoderFallback.cs" />
+    <Compile Include="Text\DecoderFallbackBuffer.cs" />
+    <Compile Include="Text\DecoderFallbackException.cs" />
+    <Compile Include="Text\DecoderReplacementFallback.cs" />
+    <Compile Include="Text\DecoderReplacementFallbackBuffer.cs" />
     <Compile Include="Text\EncoderExceptionFallback.cs" />
     <Compile Include="Text\EncoderExceptionFallbackBuffer.cs" />
     <Compile Include="Text\EncoderFallback.cs" />
