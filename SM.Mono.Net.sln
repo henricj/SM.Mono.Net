@@ -1,11 +1,9 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 2013
-VisualStudioVersion = 12.0.30324.0
+VisualStudioVersion = 12.0.30723.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SM.Mono", "SM.Mono.Net\SM.Mono.csproj", "{3516A9F1-EA92-4A60-8565-F88BC49DF4DD}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SM.Mono.WinRT", "SM.Mono.WinRT\SM.Mono.WinRT.csproj", "{FF4E83D4-CF9E-48E9-85A6-8CA8CDAC276C}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestPhoneApp", "TestPhoneApp\TestPhoneApp.csproj", "{2F3E2FED-1DC7-467D-A07C-F512BF828244}"
 EndProject
@@ -31,14 +29,6 @@ Global
 		{3516A9F1-EA92-4A60-8565-F88BC49DF4DD}.Release|ARM.Build.0 = Release|ARM
 		{3516A9F1-EA92-4A60-8565-F88BC49DF4DD}.Release|x86.ActiveCfg = Release|x86
 		{3516A9F1-EA92-4A60-8565-F88BC49DF4DD}.Release|x86.Build.0 = Release|x86
-		{FF4E83D4-CF9E-48E9-85A6-8CA8CDAC276C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{FF4E83D4-CF9E-48E9-85A6-8CA8CDAC276C}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{FF4E83D4-CF9E-48E9-85A6-8CA8CDAC276C}.Debug|ARM.ActiveCfg = Debug|Any CPU
-		{FF4E83D4-CF9E-48E9-85A6-8CA8CDAC276C}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{FF4E83D4-CF9E-48E9-85A6-8CA8CDAC276C}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{FF4E83D4-CF9E-48E9-85A6-8CA8CDAC276C}.Release|Any CPU.Build.0 = Release|Any CPU
-		{FF4E83D4-CF9E-48E9-85A6-8CA8CDAC276C}.Release|ARM.ActiveCfg = Release|Any CPU
-		{FF4E83D4-CF9E-48E9-85A6-8CA8CDAC276C}.Release|x86.ActiveCfg = Release|Any CPU
 		{2F3E2FED-1DC7-467D-A07C-F512BF828244}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{2F3E2FED-1DC7-467D-A07C-F512BF828244}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2F3E2FED-1DC7-467D-A07C-F512BF828244}.Debug|Any CPU.Deploy.0 = Debug|Any CPU
